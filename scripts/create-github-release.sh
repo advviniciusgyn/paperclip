@@ -2,7 +2,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PUBLISH_REMOTE="${PUBLISH_REMOTE:-public-gh}"
+# shellcheck source=./release-lib.sh
+. "$REPO_ROOT/scripts/release-lib.sh"
 
 dry_run=false
 version=""
@@ -13,11 +14,13 @@ Usage:
   ./scripts/create-github-release.sh <version> [--dry-run]
 
 Examples:
-  ./scripts/create-github-release.sh 1.2.3
-  ./scripts/create-github-release.sh 1.2.3 --dry-run
+  ./scripts/create-github-release.sh 2026.318.0
+  ./scripts/create-github-release.sh 2026.318.0 --dry-run
 
 Notes:
-  - Run this after pushing the release commit and tag.
+  - Run this after pushing the stable tag.
+  - Resolves the git remote automatically.
+  - In GitHub Actions, origin is used explicitly.
   - If the release already exists, this script updates its title and notes.
 EOF
 }
@@ -46,15 +49,24 @@ if [ -z "$version" ]; then
 fi
 
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Error: version must be a stable semver like 1.2.3." >&2
+  echo "Error: version must be a stable calendar version like 2026.318.0." >&2
   exit 1
 fi
 
 tag="v$version"
 notes_file="$REPO_ROOT/releases/${tag}.md"
-
+if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -z "${PUBLISH_REMOTE:-}" ] && git_remote_exists origin; then
+  PUBLISH_REMOTE=origin
+fi
+PUBLISH_REMOTE="$(resolve_release_remote)"
 if ! command -v gh >/dev/null 2>&1; then
   echo "Error: gh CLI is required to create GitHub releases." >&2
+  exit 1
+fi
+
+GITHUB_REPO="$(github_repo_from_remote "$PUBLISH_REMOTE" || true)"
+if [ -z "$GITHUB_REPO" ]; then
+  echo "Error: could not determine GitHub repository from remote $PUBLISH_REMOTE." >&2
   exit 1
 fi
 
@@ -69,7 +81,7 @@ if ! git -C "$REPO_ROOT" rev-parse "$tag" >/dev/null 2>&1; then
 fi
 
 if [ "$dry_run" = true ]; then
-  echo "[dry-run] gh release create $tag --title $tag --notes-file $notes_file"
+  echo "[dry-run] gh release create $tag -R $GITHUB_REPO --title $tag --notes-file $notes_file"
   exit 0
 fi
 
@@ -78,10 +90,10 @@ if ! git -C "$REPO_ROOT" ls-remote --exit-code --tags "$PUBLISH_REMOTE" "refs/ta
   exit 1
 fi
 
-if gh release view "$tag" >/dev/null 2>&1; then
-  gh release edit "$tag" --title "$tag" --notes-file "$notes_file"
+if gh release view "$tag" -R "$GITHUB_REPO" >/dev/null 2>&1; then
+  gh release edit "$tag" -R "$GITHUB_REPO" --title "$tag" --notes-file "$notes_file"
   echo "Updated GitHub Release $tag"
 else
-  gh release create "$tag" --title "$tag" --notes-file "$notes_file"
+  gh release create "$tag" -R "$GITHUB_REPO" --title "$tag" --notes-file "$notes_file"
   echo "Created GitHub Release $tag"
 fi
